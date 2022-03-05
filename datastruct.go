@@ -1,6 +1,7 @@
 package mongo_orm
 
 import (
+	"fmt"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson/primitive"
@@ -25,4 +26,8 @@ type ExampleObject struct {
 
 func (ExampleObject) Collection() string {
 	return "example_objects"
+}
+
+func errUnsupportedByMongoMapper(obj interface{}) error {
+	return fmt.Errorf("object '%T' isn't supported. Please implement Collection() method for start using it", obj)
 }

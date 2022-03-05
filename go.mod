@@ -4,6 +4,7 @@ go 1.17
 
 require (
 	github.com/sirupsen/logrus v1.8.1
+	github.com/xolodniy/pretty v1.1.2
 	go.mongodb.org/mongo-driver v1.8.4
 )
 

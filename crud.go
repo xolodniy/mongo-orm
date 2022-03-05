@@ -2,11 +2,11 @@ package mongo_orm
 
 import (
 	"errors"
-	"fmt"
 	"reflect"
 	"time"
 
 	"github.com/sirupsen/logrus"
+	"github.com/xolodniy/pretty"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
@@ -22,7 +22,7 @@ type CRUD interface {
 	Count(i interface{}, searchText *string) (int, error)
 
 	// internal package usage only
-	// TODO: Make it public (think solution encapsulate FindOptions)
+	// TODO: Make it public (think about encapsulate FindOptions && prepare use Query object outside)
 	getMany(result interface{}, query *Query, opts *options.FindOptions) error
 	get(result interface{}, query *Query) error
 	delete(i interface{}, query *Query) error
@@ -42,17 +42,15 @@ func (m *Model) GetMany(result interface{}, searchText *string, offset, limit in
 func (m *Model) Create(i interface{}) error {
 	t, ok := i.(mongoMapper)
 	if !ok {
-		logrus.WithField("objectType", fmt.Sprintf("%T", i))
-		return errors.New("unsupported result object")
+		return errUnsupportedByMongoMapper(i)
 	}
 	obj := reflect.ValueOf(i).Elem()
 	if obj.Kind() != reflect.Struct {
-		logrus.
-			WithField("iValue", fmt.Sprintf("%+v", i)).
-			WithField("iType", fmt.Sprintf("%T", i)).
-			Error("can't create value in database")
+		logrus.WithField("object", pretty.Print(i)).Error("can't create object, only structs supported")
 		return m.errInternal
 	}
+
+	// init default fields
 	f := obj.FieldByName("ID")
 	if f.IsValid() && f.CanSet() && f.Kind() == reflect.Array {
 		f.Set(reflect.ValueOf(primitive.NewObjectID()))
@@ -67,7 +65,7 @@ func (m *Model) Create(i interface{}) error {
 	}
 	_, err := m.db.Collection(t.Collection()).InsertOne(m.ctx, i)
 	if err != nil {
-		logrus.WithError(err).Error("can't create object in database")
+		logrus.WithError(err).WithField("object", pretty.Print(i)).Error("can't create object")
 		return m.errInternal
 	}
 	return nil
@@ -76,7 +74,7 @@ func (m *Model) Create(i interface{}) error {
 func (m *Model) GetByID(result interface{}, id string) error {
 	bsonID, err := primitive.ObjectIDFromHex(id)
 	if err != nil {
-		return errors.New("invalid object id")
+		return errInvalidID
 	}
 	query := NewQuery()
 	query.Add("_id", bsonID)
@@ -86,19 +84,15 @@ func (m *Model) GetByID(result interface{}, id string) error {
 func (m *Model) Update(i interface{}, id string) error {
 	t, ok := i.(mongoMapper)
 	if !ok {
-		logrus.WithField("objectType", fmt.Sprintf("%T", i))
-		return errors.New("unsupported update object type")
+		return errUnsupportedByMongoMapper(i)
 	}
 	objectID, err := primitive.ObjectIDFromHex(id)
 	if err != nil {
-		return errors.New("invalid object id")
+		return errInvalidID
 	}
 	obj := reflect.ValueOf(i).Elem()
 	if obj.Kind() != reflect.Struct {
-		logrus.
-			WithField("iValue", fmt.Sprintf("%+v", i)).
-			WithField("iType", fmt.Sprintf("%T", i)).
-			Error("can't update value in database")
+		logrus.WithField("object", pretty.Print(i)).Error("can't update object, only structs supported")
 		return m.errInternal
 	}
 	f := obj.FieldByName("UpdatedAt")
@@ -110,9 +104,8 @@ func (m *Model) Update(i interface{}, id string) error {
 	if err != nil {
 		logrus.WithError(err).
 			WithField("id", id).
-			WithField("objectValue", fmt.Sprintf("%+v", i)).
-			WithField("objectType", fmt.Sprintf("%T", i)).
-			Error("can't update object by id")
+			WithField("object", pretty.Print(i)).
+			Error("can't update object")
 		return m.errInternal
 	}
 	return nil
@@ -121,7 +114,7 @@ func (m *Model) Update(i interface{}, id string) error {
 func (m *Model) Delete(i interface{}, id string) error {
 	objectID, err := primitive.ObjectIDFromHex(id)
 	if err != nil {
-		return errors.New("invalid tool id")
+		return errInvalidID
 	}
 	query := NewQuery()
 	query.Add("_id", objectID)
@@ -149,12 +142,11 @@ func (m *Model) GetManyByIDs(result interface{}, ids []string) error {
 func (m *Model) count(i interface{}, query *Query) (int, error) {
 	t, ok := i.(mongoMapper)
 	if !ok {
-		logrus.WithField("objectType", fmt.Sprintf("%T", i)).Error("can't count objects")
-		return 0, errors.New("unsupported count object type")
+		return 0, errUnsupportedByMongoMapper(i)
 	}
 	count, err := m.db.Collection(t.Collection()).CountDocuments(m.ctx, query.Exec())
 	if err != nil {
-		logrus.WithError(err).Errorf("can't count objects in database")
+		logrus.WithError(err).Errorf("can't count objects")
 		return 0, m.errInternal
 	}
 	return int(count), nil
@@ -163,17 +155,16 @@ func (m *Model) count(i interface{}, query *Query) (int, error) {
 func (m *Model) getMany(result interface{}, query *Query, opts *options.FindOptions) error {
 	obj := reflect.TypeOf(result).Elem()
 	if obj.Kind() != reflect.Slice {
-		logrus.WithField("objectType", fmt.Sprintf("%T", result))
 		return errors.New("result object should be slice")
 	}
 	t, ok := reflect.New(obj.Elem()).Interface().(mongoMapper)
 	if !ok {
-		return errors.New("unsupported object type")
+		return errUnsupportedByMongoMapper(result)
 	}
 
 	cursor, err := m.db.Collection(t.Collection()).Find(m.ctx, query.Exec(), opts)
 	if err != nil {
-		logrus.WithError(err).Error("can't Query objects")
+		logrus.WithError(err).Error("can't query objects")
 		return m.errInternal
 	}
 	err = cursor.All(m.ctx, result)
@@ -187,8 +178,7 @@ func (m *Model) getMany(result interface{}, query *Query, opts *options.FindOpti
 func (m *Model) get(result interface{}, query *Query) error {
 	t, ok := result.(mongoMapper)
 	if !ok {
-		logrus.WithField("objectType", fmt.Sprintf("%T", result)).Error("can't get object by id")
-		return errors.New("unsupported result object")
+		return errUnsupportedByMongoMapper(result)
 	}
 	err := m.db.Collection(t.Collection()).FindOne(m.ctx, query.Exec()).Decode(result)
 	if errors.Is(err, mongo.ErrNoDocuments) {
@@ -204,8 +194,7 @@ func (m *Model) get(result interface{}, query *Query) error {
 func (m *Model) delete(i interface{}, query *Query) error {
 	t, ok := i.(mongoMapper)
 	if !ok {
-		logrus.WithField("objectType", fmt.Sprintf("%T", i)).Error("cant delete object from database")
-		return errors.New("unsupported delete object type")
+		return errUnsupportedByMongoMapper(i)
 	}
 	_, err := m.db.Collection(t.Collection()).DeleteOne(m.ctx, query.Exec())
 	if err != nil {
@@ -218,22 +207,21 @@ func (m *Model) delete(i interface{}, query *Query) error {
 func (m *Model) aggregate(result interface{}, pipe mongo.Pipeline, opts *options.AggregateOptions) error {
 	obj := reflect.TypeOf(result).Elem()
 	if obj.Kind() != reflect.Slice {
-		logrus.WithField("objectType", fmt.Sprintf("%T", result))
 		return errors.New("result object should be slice")
 	}
 	t, ok := reflect.New(obj.Elem()).Interface().(mongoMapper)
 	if !ok {
-		return errors.New("unsupported object type")
+		return errUnsupportedByMongoMapper(result)
 	}
 
 	cursor, err := m.db.Collection(t.Collection()).Aggregate(m.ctx, pipe, opts)
 	if err != nil {
-		logrus.WithError(err).Error("can't get tools")
+		logrus.WithError(err).Error("can't get objects")
 		return m.errInternal
 	}
 	err = cursor.All(m.ctx, result)
 	if err != nil {
-		logrus.WithError(err).Error("can't decode tools")
+		logrus.WithError(err).Error("can't decode objects")
 		return m.errInternal
 	}
 	return nil

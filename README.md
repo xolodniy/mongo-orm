@@ -1,4 +1,4 @@
 ## self-written mongo ORM package
 
-currently, integration with mongo db is disabled.   
-package left just for history
+(!) Isn't tested enough   
+Currently, work on package on pause. Package left just for history
